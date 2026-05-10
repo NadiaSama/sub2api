@@ -952,6 +952,33 @@ func (a *Account) IsBedrock() bool {
 	return a.Platform == PlatformAnthropic && a.Type == AccountTypeBedrock
 }
 
+func (a *Account) IsBillingProxy() bool {
+	return a.Type == AccountTypeBillingProxy
+}
+
+// GetExtraBool reads a boolean value from Extra map. Supports bool and string ("true"/"false") types.
+func (a *Account) GetExtraBool(key string, defaultVal bool) bool {
+	if a.Extra == nil {
+		return defaultVal
+	}
+	v, ok := a.Extra[key]
+	if !ok {
+		return defaultVal
+	}
+	switch val := v.(type) {
+	case bool:
+		return val
+	case string:
+		switch val {
+		case "true", "1", "yes":
+			return true
+		case "false", "0", "no":
+			return false
+		}
+	}
+	return defaultVal
+}
+
 func (a *Account) IsBedrockAPIKey() bool {
 	return a.IsBedrock() && a.GetCredential("auth_mode") == "apikey"
 }

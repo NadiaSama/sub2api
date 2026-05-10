@@ -3762,6 +3762,12 @@ func (s *GatewayService) GetAccessToken(ctx context.Context, account *Account) (
 			return "", "", err
 		}
 		return accessToken, "service_account", nil
+	case AccountTypeBillingProxy:
+		accessToken := account.GetCredential("access_token")
+		if accessToken == "" {
+			return "", "", errors.New("access_token not found in billing_proxy credentials")
+		}
+		return accessToken, "billing_proxy", nil
 	default:
 		return "", "", fmt.Errorf("unsupported account type: %s", account.Type)
 	}
@@ -3801,8 +3807,8 @@ const (
 )
 
 func (s *GatewayService) shouldRetryUpstreamError(account *Account, statusCode int) bool {
-	// OAuth/Setup Token 账号：仅 403 重试
-	if account.IsOAuth() {
+	// OAuth/Setup Token/BillingProxy 账号：仅 403 重试
+	if account.IsOAuth() || account.IsBillingProxy() {
 		return statusCode == 403
 	}
 
@@ -4376,6 +4382,13 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		})
 	}
 
+	// Billing Proxy 模式：使用 proxy.js 的 8 层变换管线，跳过现有 mimicry 路径。
+	if account.IsBillingProxy() {
+		bpConfig := getBillingProxyConfigFromAccount(account)
+		body = BillingProxyProcessBody(body, bpConfig)
+		c.Set("billing_proxy_mode", true)
+	}
+
 	// Claude Code 客户端判定：UA 匹配 claude-cli/* 且携带 metadata.user_id。
 	// 真正的 Claude Code 客户端自带完整的 system prompt、cache_control 断点和 header，
 	// 不需要代理做任何 body 级别的 mimicry；强行替换反而会破坏客户端的缓存策略
@@ -4384,7 +4397,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	//
 	// 对于非 Claude Code 的第三方客户端（opencode 等），仍然走完整 mimicry。
 	isClaudeCode := IsClaudeCodeClient(ctx) || isClaudeCodeClient(c.GetHeader("User-Agent"), parsed.MetadataUserID)
-	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCode
+	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCode && !account.IsBillingProxy()
 
 	if shouldMimicClaudeCode {
 		// 与 Parrot 对齐：OAuth 账号无条件重写 system（即使客户端已发了 Claude Code
@@ -5389,7 +5402,7 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 			}
 
 			if !clientDisconnected {
-				restored := string(reverseToolNamesIfPresent(c, []byte(line)))
+				restored := string(reverseIfBillingProxy(c, []byte(line), true))
 				if _, err := io.WriteString(w, restored); err != nil {
 					clientDisconnected = true
 					logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Client disconnected during streaming, continue draining upstream for usage: account=%d", account.ID)
@@ -5560,7 +5573,7 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 	if contentType == "" {
 		contentType = "application/json"
 	}
-	body = reverseToolNamesIfPresent(c, body)
+	body = reverseIfBillingProxy(c, body, false)
 	c.Data(resp.StatusCode, contentType, body)
 	return usage, nil
 }
@@ -5938,6 +5951,11 @@ func (s *GatewayService) handleBedrockNonStreamingResponse(
 func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token, tokenType, modelID string, reqStream bool, mimicClaudeCode bool) (*http.Request, error) {
 	if account.Platform == PlatformAnthropic && account.Type == AccountTypeServiceAccount {
 		return s.buildUpstreamRequestAnthropicVertex(ctx, c, account, body, token, modelID, reqStream)
+	}
+
+	// Billing Proxy: dedicated request builder with CC headers
+	if account.IsBillingProxy() {
+		return s.buildUpstreamRequestBillingProxy(ctx, c, account, body, token, modelID)
 	}
 
 	// 确定目标URL
@@ -7451,7 +7469,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 
 				for _, block := range outputBlocks {
 					if !clientDisconnected {
-						restored := reverseToolNamesIfPresent(c, []byte(block))
+						restored := reverseIfBillingProxy(c, []byte(block), true)
 						if _, werr := fmt.Fprint(w, string(restored)); werr != nil {
 							clientDisconnected = true
 							logger.LegacyPrintf("service.gateway", "Client disconnected during streaming, continuing to drain upstream for billing")
@@ -7807,7 +7825,7 @@ func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *h
 		}
 	}
 
-	body = reverseToolNamesIfPresent(c, body)
+	body = reverseIfBillingProxy(c, body, false)
 
 	// 写入响应
 	c.Data(resp.StatusCode, contentType, body)
