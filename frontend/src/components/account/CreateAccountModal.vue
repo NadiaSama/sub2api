@@ -270,6 +270,36 @@
             </div>
           </button>
 
+          <button
+            type="button"
+            @click="accountCategory = 'cliproxy'"
+            :class="[
+              'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
+              accountCategory === 'cliproxy'
+                ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/20'
+                : 'border-gray-200 hover:border-emerald-300 dark:border-dark-600 dark:hover:border-emerald-700'
+            ]"
+          >
+            <div
+              :class="[
+                'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                accountCategory === 'cliproxy'
+                  ? 'bg-emerald-500 text-white'
+                  : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
+              ]"
+            >
+              <Icon name="sparkles" size="sm" />
+            </div>
+            <div>
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">{{
+                t('admin.accounts.cliproxyLabel')
+              }}</span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">{{
+                t('admin.accounts.cliproxyDesc')
+              }}</span>
+            </div>
+          </button>
+
         </div>
 
         <div
@@ -277,6 +307,41 @@
           class="mt-3 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-800 dark:border-sky-800/40 dark:bg-sky-900/20 dark:text-sky-200"
         >
           <p>{{ t('admin.accounts.vertexAnthropicHint') }}</p>
+        </div>
+
+        <div
+          v-if="accountCategory === 'cliproxy'"
+          class="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:border-emerald-800/40 dark:bg-emerald-900/20 dark:text-emerald-200"
+        >
+          <p>{{ t('admin.accounts.cliproxyHint') }}</p>
+        </div>
+
+        <div v-if="accountCategory === 'cliproxy'" class="mt-4 space-y-4">
+          <div>
+            <label class="input-label">{{ t('admin.accounts.cliproxyBaseUrlLabel') }}</label>
+            <input
+              v-model="cliproxyBaseUrl"
+              type="text"
+              class="input"
+              :placeholder="t('admin.accounts.cliproxyBaseUrlPlaceholder')"
+            />
+            <p class="input-hint">{{ t('admin.accounts.cliproxyBaseUrlHint') }}</p>
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.accounts.cliproxyApiKeyLabel') }}</label>
+            <input
+              v-model="cliproxyApiKey"
+              type="password"
+              required
+              class="input font-mono"
+              autocomplete="new-password"
+              data-1p-ignore
+              data-lpignore="true"
+              data-bwignore="true"
+              placeholder="sk-..."
+            />
+            <p class="input-hint">{{ t('admin.accounts.cliproxyApiKeyHint') }}</p>
+          </div>
         </div>
       </div>
 
@@ -3274,10 +3339,15 @@ interface TempUnschedRuleForm {
 // State
 const step = ref(1)
 const submitting = ref(false)
-const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_account'>('oauth-based') // UI selection for account category
+const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_account' | 'cliproxy'>('oauth-based') // UI selection for account category
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
+// CLIProxyAPI 账号专用：没有官方默认 base_url，必须由用户配置成
+// http://<cliproxy>:<port>/api/provider/anthropic（强制 Anthropic provider 路由）
+// 或裸 http://<cliproxy>:<port>（由 CLIProxyAPI 内部按模型名分发）。
+const cliproxyBaseUrl = ref('')
+const cliproxyApiKey = ref('')
 const editQuotaLimit = ref<number | null>(null)
 const editQuotaDailyLimit = ref<number | null>(null)
 const editQuotaWeeklyLimit = ref<number | null>(null)
@@ -3612,6 +3682,8 @@ watch(
     }
     if ((form.platform === 'gemini' || form.platform === 'anthropic') && category === 'service_account') {
       form.type = 'service_account' as AccountType
+    } else if (form.platform === 'anthropic' && category === 'cliproxy') {
+      form.type = 'cliproxy' as AccountType
     } else if (category === 'oauth-based') {
       form.type = method as AccountType // 'oauth' or 'setup-token'
     } else {
@@ -3654,6 +3726,9 @@ watch(
       accountCategory.value = 'oauth-based'
     }
     if (newPlatform !== 'anthropic' && accountCategory.value === 'bedrock') {
+      accountCategory.value = 'oauth-based'
+    }
+    if (newPlatform !== 'anthropic' && accountCategory.value === 'cliproxy') {
       accountCategory.value = 'oauth-based'
     }
     // Reset Bedrock fields when switching platforms
@@ -4043,6 +4118,8 @@ const resetForm = () => {
   addMethod.value = 'oauth'
   apiKeyBaseUrl.value = 'https://api.anthropic.com'
   apiKeyValue.value = ''
+  cliproxyBaseUrl.value = ''
+  cliproxyApiKey.value = ''
   editQuotaLimit.value = null
   editQuotaDailyLimit.value = null
   editQuotaWeeklyLimit.value = null
@@ -4389,6 +4466,27 @@ const handleSubmit = async () => {
 
     const extra = buildAntigravityExtra()
     await createAccountAndFinish(form.platform, 'apikey', credentials, extra)
+    return
+  }
+
+  if (form.platform === 'anthropic' && accountCategory.value === 'cliproxy') {
+    if (!form.name.trim()) {
+      appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
+      return
+    }
+    if (!cliproxyBaseUrl.value.trim()) {
+      appStore.showError(t('admin.accounts.cliproxyBaseUrlRequired'))
+      return
+    }
+    if (!cliproxyApiKey.value.trim()) {
+      appStore.showError(t('admin.accounts.cliproxyApiKeyRequired'))
+      return
+    }
+    const credentials: Record<string, unknown> = {
+      base_url: cliproxyBaseUrl.value.trim(),
+      api_key: cliproxyApiKey.value.trim(),
+    }
+    await createAccountAndFinish('anthropic', 'cliproxy' as AccountType, credentials)
     return
   }
 

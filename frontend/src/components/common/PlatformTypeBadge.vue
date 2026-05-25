@@ -91,6 +91,8 @@ const typeLabel = computed(() => {
       return 'AWS'
     case 'service_account':
       return 'Vertex'
+    case 'cliproxy':
+      return 'CLIProxy'
     default:
       return props.type
   }

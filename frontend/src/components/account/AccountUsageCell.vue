@@ -1141,7 +1141,12 @@ const makeQuotaBar = (
 }
 
 const hasApiKeyQuota = computed(() => {
-  if (props.account.type !== 'apikey' && props.account.type !== 'bedrock') return false
+  if (
+    props.account.type !== 'apikey' &&
+    props.account.type !== 'bedrock' &&
+    props.account.type !== 'cliproxy'
+  )
+    return false
   return (
     (props.account.quota_daily_limit ?? 0) > 0 ||
     (props.account.quota_weekly_limit ?? 0) > 0 ||

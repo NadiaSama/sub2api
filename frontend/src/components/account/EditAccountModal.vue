@@ -543,6 +543,42 @@
         </template>
       </div>
 
+      <!-- CLIProxyAPI fields (only for cliproxy type) -->
+      <div v-if="account.type === 'cliproxy'" class="space-y-4">
+        <div
+          class="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:border-emerald-800/40 dark:bg-emerald-900/20 dark:text-emerald-200"
+        >
+          <p>{{ t('admin.accounts.cliproxyHint') }}</p>
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.cliproxyBaseUrlLabel') }}</label>
+          <input
+            v-model="editBaseUrl"
+            type="text"
+            class="input"
+            :placeholder="t('admin.accounts.cliproxyBaseUrlPlaceholder')"
+          />
+          <p class="input-hint">{{ t('admin.accounts.cliproxyBaseUrlHint') }}</p>
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.cliproxyApiKeyLabel') }}</label>
+          <input
+            v-model="editApiKey"
+            type="password"
+            class="input font-mono"
+            autocomplete="new-password"
+            data-1p-ignore
+            data-lpignore="true"
+            data-bwignore="true"
+            placeholder="sk-..."
+          />
+          <p class="input-hint">
+            {{ t('admin.accounts.cliproxyApiKeyHint') }}
+            <span class="ml-1">{{ t('admin.accounts.leaveEmptyToKeep') }}</span>
+          </p>
+        </div>
+      </div>
+
       <!-- Upstream fields (only for upstream type) -->
       <div v-if="account.type === 'upstream'" class="space-y-4">
         <div>
@@ -2844,6 +2880,11 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   } else if (newAccount.type === 'upstream' && newAccount.credentials) {
     const credentials = newAccount.credentials as Record<string, unknown>
     editBaseUrl.value = (credentials.base_url as string) || ''
+  } else if (newAccount.type === 'cliproxy' && newAccount.credentials) {
+    // cliproxy 没有官方默认 base_url，必须直接展示已保存值（可能为空）。
+    // 不要回退到 https://api.anthropic.com，否则编辑后再保存会指向真实 Anthropic。
+    const credentials = newAccount.credentials as Record<string, unknown>
+    editBaseUrl.value = (credentials.base_url as string) || ''
   } else if ((newAccount.platform === 'gemini' || newAccount.platform === 'anthropic') && newAccount.type === 'service_account' && newAccount.credentials) {
     const credentials = newAccount.credentials as Record<string, unknown>
     editVertexProjectId.value = (credentials.project_id as string) || ''
@@ -3455,6 +3496,33 @@ const handleSubmit = async () => {
       }
 
       // Add intercept warmup requests setting
+      applyInterceptWarmup(newCredentials, interceptWarmupRequests.value, 'edit')
+
+      if (!applyTempUnschedConfig(newCredentials)) {
+        return
+      }
+
+      updatePayload.credentials = newCredentials
+    } else if (props.account.type === 'cliproxy') {
+      const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
+      const newCredentials: Record<string, unknown> = { ...currentCredentials }
+
+      const trimmedBaseUrl = editBaseUrl.value.trim()
+      if (!trimmedBaseUrl) {
+        appStore.showError(t('admin.accounts.cliproxyBaseUrlRequired'))
+        return
+      }
+      newCredentials.base_url = trimmedBaseUrl
+
+      const hasExistingApiKey =
+        props.account.credentials_status?.has_api_key ?? Boolean(currentCredentials.api_key)
+      if (editApiKey.value.trim()) {
+        newCredentials.api_key = editApiKey.value.trim()
+      } else if (!hasExistingApiKey) {
+        appStore.showError(t('admin.accounts.cliproxyApiKeyRequired'))
+        return
+      }
+
       applyInterceptWarmup(newCredentials, interceptWarmupRequests.value, 'edit')
 
       if (!applyTempUnschedConfig(newCredentials)) {
