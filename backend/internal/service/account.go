@@ -145,6 +145,13 @@ func (a *Account) IsOAuth() bool {
 	return a.Type == AccountTypeOAuth || a.Type == AccountTypeSetupToken
 }
 
+// IsCLIProxy 返回该账号是否走 CLIProxyAPI 透明转发路径。
+// 复用 Anthropic API Key passthrough 整套实现：URL 重写、x-api-key 注入、
+// SSE usage 解析、错误码透传。差异只在 GetBaseURL/GetAccessToken 的源字段。
+func (a *Account) IsCLIProxy() bool {
+	return a != nil && a.Platform == PlatformAnthropic && a.Type == AccountTypeCLIProxy
+}
+
 // IsPrivacySet 检查账号的 privacy 是否已成功设置。
 // OpenAI: privacy_mode == "training_off"
 // Antigravity: privacy_mode == "privacy_set"
@@ -720,11 +727,15 @@ func (a *Account) ResolveCompactMappedModel(requestedModel string) (mappedModel 
 }
 
 func (a *Account) GetBaseURL() string {
-	if a.Type != AccountTypeAPIKey {
+	if a.Type != AccountTypeAPIKey && a.Type != AccountTypeCLIProxy {
 		return ""
 	}
 	baseURL := a.GetCredential("base_url")
 	if baseURL == "" {
+		if a.Type == AccountTypeCLIProxy {
+			// CLIProxyAPI 没有"官方默认地址"——必须由用户在 credentials.base_url 配置。
+			return ""
+		}
 		return "https://api.anthropic.com"
 	}
 	if a.Platform == PlatformAntigravity {

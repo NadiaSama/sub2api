@@ -173,15 +173,15 @@ func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (
 		return nil, fmt.Errorf("create account: %w", err)
 	}
 
-	// require_oauth_only 检查：apikey 类型账号不可加入限制分组
-	if account.Type == AccountTypeAPIKey && len(req.GroupIDs) > 0 {
+	// require_oauth_only 检查：apikey/cliproxy 等非 OAuth 账号不可加入限制分组
+	if (account.Type == AccountTypeAPIKey || account.Type == AccountTypeCLIProxy) && len(req.GroupIDs) > 0 {
 		for _, gid := range req.GroupIDs {
 			g, err := s.groupRepo.GetByID(ctx, gid)
 			if err != nil {
 				return nil, err
 			}
 			if g.RequireOAuthOnly && (g.Platform == PlatformOpenAI || g.Platform == PlatformAntigravity || g.Platform == PlatformAnthropic || g.Platform == PlatformGemini) {
-				return nil, fmt.Errorf("分组 [%s] 仅允许 OAuth 账号，apikey 类型账号无法加入", g.Name)
+				return nil, fmt.Errorf("分组 [%s] 仅允许 OAuth 账号，%s 类型账号无法加入", g.Name, account.Type)
 			}
 		}
 	}
@@ -290,14 +290,14 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
 	}
 
 	// require_oauth_only 检查
-	if account.Type == AccountTypeAPIKey && req.GroupIDs != nil {
+	if (account.Type == AccountTypeAPIKey || account.Type == AccountTypeCLIProxy) && req.GroupIDs != nil {
 		for _, gid := range *req.GroupIDs {
 			g, err := s.groupRepo.GetByID(ctx, gid)
 			if err != nil {
 				return nil, err
 			}
 			if g.RequireOAuthOnly && (g.Platform == PlatformOpenAI || g.Platform == PlatformAntigravity || g.Platform == PlatformAnthropic || g.Platform == PlatformGemini) {
-				return nil, fmt.Errorf("分组 [%s] 仅允许 OAuth 账号，apikey 类型账号无法加入", g.Name)
+				return nil, fmt.Errorf("分组 [%s] 仅允许 OAuth 账号，%s 类型账号无法加入", g.Name, account.Type)
 			}
 		}
 	}
