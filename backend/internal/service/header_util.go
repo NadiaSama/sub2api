@@ -109,6 +109,23 @@ func addHeaderRaw(h http.Header, key, value string) {
 	h[key] = append(h[key], value)
 }
 
+// delHeaderRaw deletes a header trying all three forms used in the codebase:
+// canonical (via http.Header.Del), wire casing (from headerWireCasing), and
+// the exact raw key. Mirrors setHeaderRaw's symmetric deletion pattern.
+//
+// Required whenever the header may have been written via addHeaderRaw with a
+// non-canonical key. For example, Authorization is recorded in
+// headerWireCasing as the all-lowercase "authorization"; after passthrough,
+// the map key is the lowercase form, and a plain h.Del("authorization") would
+// only remove the canonical "Authorization" entry, leaking the inbound value.
+func delHeaderRaw(h http.Header, key string) {
+	h.Del(key) // canonical (e.g. "Authorization")
+	if wk := resolveWireCasing(key); wk != key {
+		delete(h, wk) // wire casing if different
+	}
+	delete(h, key) // exact raw key
+}
+
 // getHeaderRaw reads a header value, trying multiple key forms to handle the mismatch
 // between Go canonical keys, wire casing keys, and raw keys:
 //  1. exact key as provided

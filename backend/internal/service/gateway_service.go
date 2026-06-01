@@ -380,6 +380,70 @@ var allowedHeaders = map[string]bool{
 	"x-client-request-id":                       true,
 }
 
+// hopByHopHeaders 是 RFC 7230 §6.1 定义的固定 8 个 hop-by-hop Header，
+// 外加 Proxy-Connection（HTTP/1.0 遗留，未列入 §6.1 但代理链普遍按 hop-by-hop 处理）。
+// 合规反向代理在转发请求/响应时必须 strip 这些字段——它们只对当前一段 TCP
+// 连接有意义，不应该走到下一跳。Connection header 的 value 还会动态列出额外的
+// hop-by-hop 字段，由 copyInboundHeadersForCLIProxy 在运行时解析。
+var hopByHopHeaders = map[string]bool{
+	"connection":          true,
+	"keep-alive":          true,
+	"proxy-authenticate":  true,
+	"proxy-authorization": true,
+	"proxy-connection":    true, // 非 RFC，但工业事实标准
+	"te":                  true,
+	"trailer":             true,
+	"transfer-encoding":   true,
+	"upgrade":             true,
+}
+
+// replaceInboundAuthWithAPIKey 删除入站请求中的所有鉴权头（防止泄漏给上游），
+// 然后写入指定的 x-api-key。两种 AccountType 在替换 token 这一点上语义一致，
+// 因此抽出 helper 共用。是否进一步删除 Cookie 由调用方按 AccountType 决定。
+//
+// 使用 delHeaderRaw 而非 h.Del，因为 Authorization 在本项目的 wire casing 表里
+// 映射为全小写 "authorization"，h.Del 会因 canonical 化而漏删。
+func replaceInboundAuthWithAPIKey(h http.Header, token string) {
+	delHeaderRaw(h, "authorization")
+	delHeaderRaw(h, "x-api-key")
+	delHeaderRaw(h, "x-goog-api-key")
+	setHeaderRaw(h, "x-api-key", token)
+}
+
+// copyInboundHeadersForCLIProxy 把入站请求的业务/应用层 Header 原样复制到
+// outbound，不做白名单、不做兜底。沿用 resolveWireCasing 把 Go canonical 化
+// 后的 key 恢复成 headerWireCasing 表里认定的 wire 形态（客户端的真实原始
+// 大小写在 Go/Gin 解析层就已丢失，无法还原）。同时 strip RFC 7230 §6.1 的
+// hop-by-hop Header（含 Connection value 列出的字段）。鉴权替换由
+// replaceInboundAuthWithAPIKey 负责，不在本 helper 范围内。
+func copyInboundHeadersForCLIProxy(dst http.Header, src http.Header) {
+	// 先动态收集 Connection value 里列出的额外 hop-by-hop 字段
+	var dynamicHopByHop map[string]bool
+	for _, v := range src.Values("Connection") {
+		for _, name := range strings.Split(v, ",") {
+			name = strings.TrimSpace(strings.ToLower(name))
+			if name == "" {
+				continue
+			}
+			if dynamicHopByHop == nil {
+				dynamicHopByHop = map[string]bool{}
+			}
+			dynamicHopByHop[name] = true
+		}
+	}
+
+	for key, values := range src {
+		lowerKey := strings.ToLower(key)
+		if hopByHopHeaders[lowerKey] || dynamicHopByHop[lowerKey] {
+			continue
+		}
+		wireKey := resolveWireCasing(key)
+		for _, v := range values {
+			addHeaderRaw(dst, wireKey, v)
+		}
+	}
+}
+
 // GatewayCache 定义网关服务的缓存操作接口。
 // 提供粘性会话（Sticky Session）的存储、查询、刷新和删除功能。
 //
@@ -3726,8 +3790,8 @@ func (s *GatewayService) isModelSupportedByAccount(account *Account, requestedMo
 	if account.Platform == PlatformOpenAI && account.IsOpenAIPassthroughEnabled() {
 		return true
 	}
-	// OAuth/SetupToken 账号使用 Anthropic 标准映射（短ID → 长ID）
-	if account.Platform == PlatformAnthropic && account.Type != AccountTypeAPIKey {
+	// CLIProxy 跳过 normalize：转发只走 account.GetMappedModel，mapping KEYS 是原始别名
+	if account.Platform == PlatformAnthropic && account.Type != AccountTypeAPIKey && account.Type != AccountTypeCLIProxy {
 		if account.Type == AccountTypeServiceAccount {
 			requestedModel = normalizeVertexAnthropicModelID(claude.NormalizeModelID(requestedModel))
 		} else {
@@ -5241,30 +5305,36 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	}
 
 	if c != nil && c.Request != nil {
-		for key, values := range c.Request.Header {
-			lowerKey := strings.ToLower(strings.TrimSpace(key))
-			if !allowedHeaders[lowerKey] {
-				continue
-			}
-			wireKey := resolveWireCasing(key)
-			for _, v := range values {
-				addHeaderRaw(req.Header, wireKey, v)
+		if account.IsCLIProxy() {
+			// CliProxyAPI 走"合规反向代理"语义：业务 Header 全透传 + hop-by-hop strip。
+			copyInboundHeadersForCLIProxy(req.Header, c.Request.Header)
+		} else {
+			for key, values := range c.Request.Header {
+				lowerKey := strings.ToLower(strings.TrimSpace(key))
+				if !allowedHeaders[lowerKey] {
+					continue
+				}
+				wireKey := resolveWireCasing(key)
+				for _, v := range values {
+					addHeaderRaw(req.Header, wireKey, v)
+				}
 			}
 		}
 	}
 
 	// 覆盖入站鉴权残留，并注入上游认证
-	req.Header.Del("authorization")
-	req.Header.Del("x-api-key")
-	req.Header.Del("x-goog-api-key")
-	req.Header.Del("cookie")
-	setHeaderRaw(req.Header, "x-api-key", token)
+	replaceInboundAuthWithAPIKey(req.Header, token)
+	// 删除 Cookie（避免跨边界泄漏会话凭据）。两种 AccountType 共同行为。
+	delHeaderRaw(req.Header, "cookie")
 
-	if getHeaderRaw(req.Header, "content-type") == "" {
-		setHeaderRaw(req.Header, "content-type", "application/json")
-	}
-	if getHeaderRaw(req.Header, "anthropic-version") == "" {
-		setHeaderRaw(req.Header, "anthropic-version", "2023-06-01")
+	if !account.IsCLIProxy() {
+		// CliProxyAPI 路径维持"客户端没带就不补"——让 CliProxyAPI 后端自己决定。
+		if getHeaderRaw(req.Header, "content-type") == "" {
+			setHeaderRaw(req.Header, "content-type", "application/json")
+		}
+		if getHeaderRaw(req.Header, "anthropic-version") == "" {
+			setHeaderRaw(req.Header, "anthropic-version", "2023-06-01")
+		}
 	}
 
 	return req, nil
@@ -9219,29 +9289,32 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	}
 
 	if c != nil && c.Request != nil {
-		for key, values := range c.Request.Header {
-			lowerKey := strings.ToLower(strings.TrimSpace(key))
-			if !allowedHeaders[lowerKey] {
-				continue
-			}
-			wireKey := resolveWireCasing(key)
-			for _, v := range values {
-				addHeaderRaw(req.Header, wireKey, v)
+		if account.IsCLIProxy() {
+			copyInboundHeadersForCLIProxy(req.Header, c.Request.Header)
+		} else {
+			for key, values := range c.Request.Header {
+				lowerKey := strings.ToLower(strings.TrimSpace(key))
+				if !allowedHeaders[lowerKey] {
+					continue
+				}
+				wireKey := resolveWireCasing(key)
+				for _, v := range values {
+					addHeaderRaw(req.Header, wireKey, v)
+				}
 			}
 		}
 	}
 
-	req.Header.Del("authorization")
-	req.Header.Del("x-api-key")
-	req.Header.Del("x-goog-api-key")
-	req.Header.Del("cookie")
-	req.Header.Set("x-api-key", token)
+	replaceInboundAuthWithAPIKey(req.Header, token)
+	delHeaderRaw(req.Header, "cookie")
 
-	if req.Header.Get("content-type") == "" {
-		req.Header.Set("content-type", "application/json")
-	}
-	if req.Header.Get("anthropic-version") == "" {
-		req.Header.Set("anthropic-version", "2023-06-01")
+	if !account.IsCLIProxy() {
+		if getHeaderRaw(req.Header, "content-type") == "" {
+			setHeaderRaw(req.Header, "content-type", "application/json")
+		}
+		if getHeaderRaw(req.Header, "anthropic-version") == "" {
+			setHeaderRaw(req.Header, "anthropic-version", "2023-06-01")
+		}
 	}
 
 	return req, nil
