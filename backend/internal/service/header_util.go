@@ -119,11 +119,21 @@ func addHeaderRaw(h http.Header, key, value string) {
 // the map key is the lowercase form, and a plain h.Del("authorization") would
 // only remove the canonical "Authorization" entry, leaking the inbound value.
 func delHeaderRaw(h http.Header, key string) {
-	h.Del(key) // canonical (e.g. "Authorization")
-	if wk := resolveWireCasing(key); wk != key {
-		delete(h, wk) // wire casing if different
+	deleteHeaderAllForms(h, key)
+}
+
+// deleteHeaderAllForms removes a header in all common key forms (raw, wire casing,
+// canonical) so subsequent setHeaderRaw will not coexist with a passthrough value
+// written under a different casing.
+func deleteHeaderAllForms(h http.Header, key string) {
+	if h == nil || key == "" {
+		return
 	}
-	delete(h, key) // exact raw key
+	h.Del(key) // canonical
+	delete(h, key)
+	if wk := resolveWireCasing(key); wk != key {
+		delete(h, wk)
+	}
 }
 
 // getHeaderRaw reads a header value, trying multiple key forms to handle the mismatch
