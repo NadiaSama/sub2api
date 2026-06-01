@@ -625,6 +625,14 @@ func (a *Account) IsModelSupported(requestedModel string) bool {
 	if mappingSupportsRequestedModel(mapping, requestedModel) {
 		return true
 	}
+	// CLIProxy 透传：mapping VALUES 是 cliproxy 实际接受的完整 ID，客户端也可能直接发完整 ID
+	if a.IsCLIProxy() {
+		for _, v := range mapping {
+			if v == requestedModel {
+				return true
+			}
+		}
+	}
 	normalized := normalizeRequestedModelForLookup(a.Platform, requestedModel)
 	return normalized != requestedModel && mappingSupportsRequestedModel(mapping, normalized)
 }
