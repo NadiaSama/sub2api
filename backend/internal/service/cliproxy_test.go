@@ -122,8 +122,10 @@ func TestGatewayService_BuildUpstreamRequest_CLIProxyAPIPassthrough(t *testing.T
 		"必须用 cliproxy 配置的 api_key 而不是入站 key")
 	require.Equal(t, "", getHeaderRaw(req.Header, "authorization"),
 		"入站 Authorization 应被清掉，避免泄漏给 CLIProxyAPI")
-	require.Equal(t, "2023-06-01", getHeaderRaw(req.Header, "anthropic-version"),
-		"应补齐 anthropic-version")
+	require.Equal(t, "", getHeaderRaw(req.Header, "anthropic-version"),
+		"CLIProxy 路径不再兜底补齐 anthropic-version：客户端没带就保持空")
+	require.Equal(t, "", getHeaderRaw(req.Header, "content-type"),
+		"CLIProxy 路径不再兜底补齐 content-type")
 }
 
 // 兜底：cliproxy 账号未配置 base_url 时，必须直接报错，
